@@ -8,14 +8,43 @@
 #
 # An `.env` anywhere else (the repo root, for example) is NOT read.
 
+x-otel-node: &otel-node
+  # Loads the OpenTelemetry auto-instrumentations before any application code
+  # runs, which is what makes the tracing zero-code: no service imports or calls
+  # an OpenTelemetry API anywhere.
+  NODE_OPTIONS: --require @opentelemetry/auto-instrumentations-node/register
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+
 services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      DASH0_ENDPOINT: ${DASH0_ENDPOINT:?set DASH0_ENDPOINT in pizza-app/.env - copy .env.template to .env}
+      DASH0_AUTH_TOKEN: ${DASH0_AUTH_TOKEN:?set DASH0_AUTH_TOKEN in pizza-app/.env - copy .env.template to .env}
+      DASH0_DATASET: ${DASH0_DATASET:-default}
+      DASH0_ENVIRONMENT: ${DASH0_ENVIRONMENT:-local}
+    ports:
+      # Published so the browser can post its telemetry here too. The services
+      # reach the Collector over the Compose network and need no published port.
+      - "4318:4318"
+
   order-service:
     build: ./order-service
     ports:
       - "3000:3000"
     environment:
-      - KITCHEN_SERVICE_URL=http://kitchen-service:3001
-      - DELIVERY_SERVICE_URL=http://delivery-service:3002
+      <<: *otel-node
+      OTEL_SERVICE_NAME: order-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=pizza-app,service.version=1.0.0,vcs.repository.url.full=${VCS_REPOSITORY_URL:-https://github.com/dash0-community/otel-pizza-workshop}
+      KITCHEN_SERVICE_URL: http://kitchen-service:3001
+      DELIVERY_SERVICE_URL: http://delivery-service:3002
     healthcheck:
       test:
         - CMD
@@ -31,13 +60,18 @@ services:
         condition: service_healthy
       delivery-service:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   kitchen-service:
     build: ./kitchen-service
     ports:
       - "3001:3001"
     environment:
-      - SLOW_KITCHEN=${SLOW_KITCHEN:-false}
+      <<: *otel-node
+      OTEL_SERVICE_NAME: kitchen-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=pizza-app,service.version=1.0.0,vcs.repository.url.full=${VCS_REPOSITORY_URL:-https://github.com/dash0-community/otel-pizza-workshop}
+      SLOW_KITCHEN: ${SLOW_KITCHEN:-false}
     healthcheck:
       test:
         - CMD
@@ -48,13 +82,19 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    depends_on:
+      otel-collector:
+        condition: service_started
 
   delivery-service:
     build: ./delivery-service
     ports:
       - "3002:3002"
     environment:
-      - NO_DRIVERS=${NO_DRIVERS:-false}
+      <<: *otel-node
+      OTEL_SERVICE_NAME: delivery-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=pizza-app,service.version=1.0.0,vcs.repository.url.full=${VCS_REPOSITORY_URL:-https://github.com/dash0-community/otel-pizza-workshop}
+      NO_DRIVERS: ${NO_DRIVERS:-false}
     healthcheck:
       test:
         - CMD
@@ -65,11 +105,19 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    depends_on:
+      otel-collector:
+        condition: service_started
 
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
+    environment:
+      # Where the browser posts its telemetry. Empty means "same host as the
+      # page, port 4318", which is the published Collector port above.
+      DASH0_BROWSER_ENDPOINT: ${DASH0_BROWSER_ENDPOINT:-}
+      DASH0_WEBSITE_SERVICE_NAME: ${DASH0_WEBSITE_SERVICE_NAME:-pizza-frontend}
     depends_on:
       order-service:
         condition: service_healthy
