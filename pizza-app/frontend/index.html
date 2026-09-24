@@ -8,6 +8,10 @@
          Set it explicitly if the Order Service is not on the machine serving this page,
          e.g. content="https://my-vm.example.com:3000" -->
     <meta name="order-api-url" content="">
+    <!-- Browser instrumentation. dash0.js is generated at container start from
+         dash0.js.template; the SDK script below picks up the queued init call. -->
+    <script src="dash0.js"></script>
+    <script defer crossorigin="anonymous" src="https://unpkg.com/@dash0/sdk-web@0.27.0/dist/dash0.iife.js"></script>
     <style>
         * {
             margin: 0;

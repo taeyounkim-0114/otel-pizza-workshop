@@ -1,0 +1,58 @@
+// Browser instrumentation config. Rendered into /usr/share/nginx/html/dash0.js
+// at container start, so the values come from pizza-app/.env rather than being
+// baked into the image.
+(function () {
+  var endpoint = "${DASH0_BROWSER_ENDPOINT}";
+  if (!endpoint) {
+    endpoint = window.location.protocol + "//" + window.location.hostname + ":4318";
+  }
+
+  var serviceName = "${DASH0_WEBSITE_SERVICE_NAME}" || "pizza-frontend";
+
+  // Resolved the same way index.html resolves it, so the propagator below
+  // matches whatever the page actually calls.
+  var meta = document.querySelector('meta[name="order-api-url"]');
+  var orderApi = (
+    new URLSearchParams(window.location.search).get("api") ||
+    window.ORDER_API_URL ||
+    (meta && meta.content) ||
+    window.location.protocol + "//" + window.location.hostname + ":3000"
+  ).replace(/\/+$/, "");
+
+  function escapeForRegExp(value) {
+    var specials = ".*+?^=!:{}()|[]/\\-";
+    var escaped = "";
+    for (var i = 0; i < value.length; i++) {
+      var character = value.charAt(i);
+      escaped += specials.indexOf(character) >= 0 ? "\\" + character : character;
+    }
+    return escaped;
+  }
+
+  // Queues SDK calls until the SDK script below has loaded.
+  (function (d, a, s, h, z) {
+    d[a] ||
+      ((z = d[a] = function () {
+        h.push(arguments);
+      }),
+      (z._t = new Date()),
+      (z._v = 1),
+      (h = z._q = []));
+  })(window, "dash0");
+
+  window.dash0("init", {
+    serviceName: serviceName,
+    endpoint: {
+      url: endpoint,
+      // Telemetry goes to the local OpenTelemetry Collector, which attaches the
+      // real Dash0 credentials on the way out. No Dash0 token is shipped to the
+      // browser. If you ever point `url` straight at Dash0, replace this with a
+      // token limited to Ingesting on a single dataset - it becomes public.
+      authToken: "sent-via-local-collector",
+    },
+    // The Order Service is a different origin (port 3000) than this page (8080),
+    // so trace context has to be propagated explicitly for the browser span and
+    // the backend spans to land in one trace.
+    propagators: [{ type: "traceparent", match: [new RegExp("^" + escapeForRegExp(orderApi))] }],
+  });
+})();

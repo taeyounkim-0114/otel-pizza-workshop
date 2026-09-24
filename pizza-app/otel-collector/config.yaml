@@ -1,0 +1,86 @@
+# OpenTelemetry Collector — the single place telemetry leaves this stack from.
+#
+# The three Node services and the browser frontend all send OTLP here; this
+# Collector is the only component that holds the Dash0 credentials.
+#
+# Values come from pizza-app/.env via docker-compose.yml.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        # The browser posts telemetry from a different origin (port 8080) than
+        # this Collector (4318), so preflight requests have to be answered.
+        cors:
+          allowed_origins:
+            - http://localhost:8080
+            - http://localhost:3000
+            - http://127.0.0.1:8080
+          allowed_headers:
+            - "*"
+
+processors:
+  # Health-check traffic is generated every 30s per service by Docker's
+  # healthcheck and says nothing about pizza orders. Dropping it here keeps the
+  # Trace Explorer readable and the ingest volume low. Remove this processor
+  # from the pipelines below if you want to see those spans.
+  filter/drop-noise:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["http.route"] == "/health"'
+        - 'attributes["url.path"] == "/health"'
+        - 'IsMatch(name, "^middleware - ")'
+
+  resource/environment:
+    attributes:
+      - key: deployment.environment.name
+        value: ${env:DASH0_ENVIRONMENT}
+        action: upsert
+
+  batch:
+    send_batch_size: 512
+    timeout: 5s
+
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+exporters:
+  otlp/dash0:
+    endpoint: ${env:DASH0_ENDPOINT}
+    headers:
+      Authorization: Bearer ${env:DASH0_AUTH_TOKEN}
+      Dash0-Dataset: ${env:DASH0_DATASET}
+
+  # Prints a one-line summary of what was exported, so `docker compose logs
+  # otel-collector` answers "is anything flowing?".
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/drop-noise, resource/environment, batch]
+      exporters: [otlp/dash0, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/environment, batch]
+      exporters: [otlp/dash0, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/environment, batch]
+      exporters: [otlp/dash0, debug]
+  telemetry:
+    logs:
+      level: info
